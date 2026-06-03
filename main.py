@@ -52,13 +52,18 @@ app = FastAPI(title="Velum")
 
 UPSTREAM = os.environ["UPSTREAM_URL"].rstrip("/")
 PII_ENABLED = os.environ.get("PII_ENABLED", "true").lower() == "true"
+STRIP_REASONING = os.environ.get("STRIP_REASONING", "").lower() == "true"
+# Scheme F: strip reasoning_content from upstream responses so Hermes's
+# custom provider path doesn't need to echo it back in multi-turn.
+# DMXAPI still gets thinking:enabled → model does CoT, but reasoning
+# is not persisted across turns (fresh thinking each turn).
 
 # ── Health ──────────────────────────────────────────────────────────────────
 
 
 @app.get("/health")
 async def health():
-    status: dict = {"status": "ok", "upstream": UPSTREAM, "pii": "disabled"}
+    status: dict = {"status": "ok", "upstream": UPSTREAM, "pii": "disabled", "strip_reasoning": STRIP_REASONING}
     if PII_ENABLED:
         try:
             from argus_redact import redact
@@ -473,6 +478,13 @@ async def chat_completions(request: Request):
                     message[field] = await restore_text(text, pii_key)
             print(f"[pipeline] PII restored")
 
+        # ── Strip reasoning_content (Scheme F: Hermes custom provider compat) ──
+        if STRIP_REASONING:
+            message = resp_json.get("choices", [{}])[0].get("message", {})
+            rc = message.pop("reasoning_content", None)
+            if rc:
+                print(f"[pipeline] reasoning_content stripped ({len(rc)} chars)")
+
         print(f"[pipeline] OK non-stream")
         return JSONResponse(content=resp_json, status_code=r.status_code)
 
@@ -482,6 +494,7 @@ async def chat_completions(request: Request):
     # Why not restore raw SSE: DeepSeek SSE chunks split identifiers across
     # lines, so full identifier may never appear as continuous text.
     # Without PII, stream chunks in real time.
+    # Scheme F: if STRIP_REASONING, also buffer to strip reasoning_content.
 
     sse_buffer: list[bytes] = []
 
@@ -491,8 +504,8 @@ async def chat_completions(request: Request):
                 "POST", f"{UPSTREAM}/chat/completions",
                 content=body, headers=headers,
             ) as upstream_resp:
-                if pii_key:
-                    # Buffer all → extract fields → restore → repack
+                if pii_key or STRIP_REASONING:
+                    # Buffer all → extract fields → [restore PII] → [strip reasoning] → repack
                     async for chunk in upstream_resp.aiter_bytes():
                         sse_buffer.append(chunk)
 
@@ -518,14 +531,26 @@ async def chat_completions(request: Request):
                     full_content = "".join(content_parts)
                     full_reasoning = "".join(reasoning_parts)
 
-                    restored_content = await restore_text(full_content, pii_key)
-                    restored_reasoning = await restore_text(full_reasoning, pii_key) if full_reasoning else ""
+                    if pii_key:
+                        restored_content = await restore_text(full_content, pii_key)
+                        restored_reasoning = await restore_text(full_reasoning, pii_key) if full_reasoning else ""
+                    else:
+                        restored_content = full_content
+                        restored_reasoning = full_reasoning
 
-                    print(
-                        f"[pipeline] stream PII restored "
-                        f"content={len(full_content)}→{len(restored_content)} "
-                        f"reasoning={len(full_reasoning)}→{len(restored_reasoning)}"
-                    )
+                    # Strip reasoning_content for Hermes compat
+                    if STRIP_REASONING:
+                        rc_len = len(restored_reasoning) if restored_reasoning else 0
+                        restored_reasoning = None
+                        if rc_len:
+                            print(f"[pipeline] stream reasoning_content stripped ({rc_len} chars)")
+
+                    if pii_key:
+                        print(
+                            f"[pipeline] stream PII restored "
+                            f"content={len(full_content)}→{len(restored_content)} "
+                            f"reasoning={len(full_reasoning)}→{len(restored_reasoning) if restored_reasoning else 0}"
+                        )
 
                     # Yield single SSE event with restored content
                     event = {
@@ -538,7 +563,7 @@ async def chat_completions(request: Request):
                             "delta": {
                                 "role": "assistant",
                                 "content": restored_content,
-                                "reasoning_content": restored_reasoning or None,
+                                "reasoning_content": restored_reasoning,
                             },
                             "finish_reason": "stop",
                         }],
@@ -547,7 +572,7 @@ async def chat_completions(request: Request):
                     out = "data: " + json.dumps(event, ensure_ascii=False) + "\n\ndata: [DONE]\n"
                     yield out.encode("utf-8")
                 else:
-                    # No PII: real-time streaming
+                    # No PII + no strip: real-time streaming
                     async for chunk in upstream_resp.aiter_bytes():
                         sse_buffer.append(chunk)
                         yield chunk
