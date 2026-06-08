@@ -292,17 +292,29 @@ Hermes Dashboard 地址：`http://your-nas-ip:17832`。在 Dashboard 中添加�
 | `!pii` | 查看当前防火墙状态和策略配置 |
 | `!pii debug <文本>` | 分析指定文本的 PII 检测结果，不调用 LLM |
 | `!pii 伪名` / `!pii pseudonym` | 人名替换为逼真假名（其他类型照常脱敏） |
+| `!pii off <文本>` | 跳过 PII 脱敏，原文直通 LLM（仅本条消息） |
 | `!pii org,loc` | 部分放行：保留组织和地名不脱敏 |
+
+### 分隔符
+
+子命令与消息正文之间用**空格**分隔：
+
+```
+!pii off 帮我生成身份证号格式的测试数据
+!pii debug 13900001111
+```
+
+不加空格时子命令本身被视为完整指令（如 `!pii 伪名`、`!pii off`）。
 
 ### 示例
 
 ```
-用户: !pii 伪名 帮我查一下张伟的通讯录信息
-      → 本条消息以化名模式发送，LLM 看到的是假名
-      → LLM 回复后自动还原真实姓名
+用户: !pii off 请生成测试用身份证号：110101199001011234
+      → 本条消息跳过 PII 检测，原文直通 LLM
+      → LLM 看到真实身份证号
 
-用户: 再帮我查一下李娜的   ← 不加前缀，自动恢复默认模式
-      → 正常脱敏，人名变为 P-NNNNN 标识符
+用户: 接着生成手机号   ← 不加前缀，自动恢复默认脱敏模式
+      → 正常脱敏
 ```
 
 ```
@@ -435,7 +447,7 @@ docker exec velum python /app/test_custom_dict.py
 
 | 组件 | 版本/说明 |
 |------|---------|
-| **运行环境** | Docker 24+（已在 Synology DSM 7.x 验证） |
+| **运行环境** | Docker 24+（已在 UGREEN DXP4800 (UGOS Pro) 验证） |
 | **Python** | 3.12-slim |
 | **argus-redact** | ≥ 0.5.0（含 HanLP Chinese NER） |
 | **网关** | Hermes Agent (nousresearch/hermes-agent:latest) |

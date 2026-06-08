@@ -434,7 +434,7 @@ docker exec velum python /app/test_custom_dict.py
 
 | Component | Version / Notes |
 |-----------|----------------|
-| **Runtime** | Docker 24+ (verified on Synology DSM 7.x) |
+| **Runtime** | Docker 24+ (verified on UGREEN DXP4800, UGOS Pro) |
 | **Python** | 3.12-slim |
 | **argus-redact** | ≥ 0.5.0 (with HanLP Chinese NER) |
 | **Gateway** | Hermes Agent (nousresearch/hermes-agent:latest) |

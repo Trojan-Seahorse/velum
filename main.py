@@ -28,7 +28,12 @@ Mode prefix detection:
   !pii 伪名    → switch to redact_pseudonym_llm() (this message only)
   !pii debug   → analyze text without calling LLM
   !pii TYPE,TYPE → override entity strategies (this message only)
+  !pii off      → skip PII entirely (raw pass-through, this message only)
   default      → identifier mode (no prefix needed)
+
+Separator: space between sub-command and message body.
+  !pii off <text>   → disable PII, send <text> as-is
+  !pii debug <text> → analyze PII in <text>
 
 All modes are per-message. No persistent state.
 
@@ -140,11 +145,11 @@ try:
             line.strip() for line in f
             if line.strip() and not line.strip().startswith("#")
         ]
-    print(f"[pipeline] Loaded {len(LOCATION_NAMES)} compound location names from location_names.txt")
+    print(f"[velum] Loaded {len(LOCATION_NAMES)} compound location names from location_names.txt")
 except FileNotFoundError:
-    print("[pipeline] location_names.txt not found — compound location injection disabled")
+    print("[velum] location_names.txt not found — compound location injection disabled")
 except Exception as e:
-    print(f"[pipeline] Error loading location_names.txt: {e}")
+    print(f"[velum] Error loading location_names.txt: {e}")
 
 
 def parse_mode_prefix(text: str) -> tuple:
@@ -154,6 +159,7 @@ def parse_mode_prefix(text: str) -> tuple:
       !pii                      → show status
       !pii debug [text]         → debug mode (skip LLM, return PII analysis)
       !pii 伪名 / pseudonym     → pseudonym-llm mode (this message only)
+      !pii off [text]           → skip PII entirely (raw pass-through, this message only)
       !pii TYPE,TYPE            → partial override (keep specified types, this message only)
 
     All modes are per-message — the next message without a prefix
@@ -162,7 +168,7 @@ def parse_mode_prefix(text: str) -> tuple:
     Half-width ! and full-width ！ are both accepted (no input-method switching).
 
     Returns:
-      mode: "identifier" | "pseudonym" | "partial" | "debug"
+      mode: "identifier" | "pseudonym" | "partial" | "debug" | "off"
       payload: text with prefix stripped (or original if no prefix)
       config_override: dict of entity→strategy overrides (for TYPE,TYPE)
     """
@@ -182,6 +188,14 @@ def parse_mode_prefix(text: str) -> tuple:
     # sub-command: 伪名 / pseudonym / fake
     if rest in ("伪名", "pseudonym", "fake"):
         return "pseudonym", "", {}
+
+    # sub-command: off / disable / none → skip PII entirely (raw pass-through)
+    for cmd in ("off", "disable", "none"):
+        if rest == cmd:
+            return "off", "", {}
+        if rest.startswith(cmd + " "):
+            payload = rest[len(cmd):].strip()
+            return "off", payload, {}
 
     # bare !pii → show status (debug mode with empty payload triggers _debug_status)
     if not rest:
@@ -245,7 +259,7 @@ async def redact_text(text: str, mode: str = "identifier", config_override: dict
             return {"has_pii": True, "redacted": redacted_text, "key": redact_key}
         return {"has_pii": False, "redacted": text, "key": None}
     except Exception as e:
-        print(f"[pipeline] argus-redact error ({e}) · pass-through")
+        print(f"[velum] argus-redact error ({e}) · pass-through")
         return {"has_pii": False, "redacted": text, "key": None}
 
 
@@ -279,7 +293,7 @@ async def restore_text(text: str, key: dict) -> str:
             None, partial(restore, text, augmented_key)
         )
     except Exception as e:
-        print(f"[pipeline] argus restore err: {e}")
+        print(f"[velum] argus restore err: {e}")
     return text
 
 
@@ -323,6 +337,13 @@ def _debug_status() -> str:
         f"PII 开关:  {'启用' if PII_ENABLED else '禁用'}",
         f"复合地名:  {len(LOCATION_NAMES)} 条",
         f"前缀格式:  per-type (P-人 O-组织 L-地点 T-电话 ...)",
+        "",
+        "可用命令:",
+        "  !pii                   查看此状态",
+        "  !pii debug <文本>      分析 PII 检测结果",
+        "  !pii 伪名              伪名模式 (本消息)",
+        "  !pii off <文本>        跳过脱敏 (本消息)",
+        "  !pii TYPE,TYPE         放行指定类型 (本消息)",
         "",
         "策略配置:",
     ]
@@ -397,6 +418,7 @@ async def chat_completions(request: Request):
         pii_mode, clean_text, config_override = parse_mode_prefix(user_text)
 
         # !pii debug mode: short-circuit — return PII analysis as SSE stream
+        # !pii off: skip PII entirely — pii_key stays None, no redaction
         # (SSE format required for Hermes gateway compatibility)
         if pii_mode == "debug":
             response_text = _debug_status() if not clean_text else _debug_analyze(clean_text)
@@ -417,23 +439,33 @@ async def chat_completions(request: Request):
 
             return StreamingResponse(debug_sse(), media_type="text/event-stream")
 
-        pii_result = await redact_text(clean_text or user_text, pii_mode, config_override)
-        if pii_result["has_pii"]:
-            set_last_user_content(messages, pii_result["redacted"])
-            pii_key = pii_result["key"]
-            body_json["messages"] = messages
-            body = json.dumps(body_json).encode("utf-8")
+        # !pii off mode: skip PII detection and redaction entirely
+        if pii_mode == "off":
+            # Replace user text with clean payload (strip the !pii off prefix)
+            if clean_text:
+                set_last_user_content(messages, clean_text)
+                body_json["messages"] = messages
+                body = json.dumps(body_json).encode("utf-8")
+            print(f"[velum] REQ stream={stream} msgs={len(messages)} model={model} mode=off")
+            # Fall through to upstream call with pii_key=None
+        else:
+            pii_result = await redact_text(clean_text or user_text, pii_mode, config_override)
+            if pii_result["has_pii"]:
+                set_last_user_content(messages, pii_result["redacted"])
+                pii_key = pii_result["key"]
+                body_json["messages"] = messages
+                body = json.dumps(body_json).encode("utf-8")
 
-    print(
-        f"[pipeline] REQ stream={stream} msgs={len(messages)} "
-        f"model={model} mode={pii_mode} pii={'YES' if pii_key else 'no'}"
-    )
+            print(
+                f"[velum] REQ stream={stream} msgs={len(messages)} "
+                f"model={model} mode={pii_mode} pii={'YES' if pii_key else 'no'}"
+            )
 
     # ── DeepSeek thinking injection ──
     if model.startswith("deepseek") and "thinking" not in body_json:
         body_json["thinking"] = {"type": "enabled"}
         body = json.dumps(body_json).encode("utf-8")
-        print("[pipeline] thinking injected: enabled (deepseek default override)")
+        print("[velum] thinking injected: enabled (deepseek default override)")
 
     # ── Build upstream headers ──
     headers = {
@@ -451,7 +483,7 @@ async def chat_completions(request: Request):
 
         if r.status_code != 200:
             preview = r.text[:500]
-            print(f"[pipeline] UPSTREAM {r.status_code}: {preview}")
+            print(f"[velum] UPSTREAM {r.status_code}: {preview}")
             return JSONResponse(
                 content={"error": f"Upstream {r.status_code}", "detail": preview},
                 status_code=502,
@@ -477,9 +509,9 @@ async def chat_completions(request: Request):
                 text = message.get(field, "")
                 if text:
                     message[field] = await restore_text(text, pii_key)
-            print(f"[pipeline] PII restored")
+            print(f"[velum] PII restored")
 
-        print(f"[pipeline] OK non-stream")
+        print(f"[velum] OK non-stream")
         return JSONResponse(content=resp_json, status_code=r.status_code)
 
     # ── Streaming ──
@@ -528,7 +560,7 @@ async def chat_completions(request: Request):
                     restored_reasoning = await restore_text(full_reasoning, pii_key) if full_reasoning else ""
 
                     print(
-                        f"[pipeline] stream PII restored "
+                        f"[velum] stream PII restored "
                         f"content={len(full_content)}→{len(restored_content)} "
                         f"reasoning={len(full_reasoning)}→{len(restored_reasoning)}"
                     )
@@ -558,6 +590,6 @@ async def chat_completions(request: Request):
                         sse_buffer.append(chunk)
                         yield chunk
 
-        print(f"[pipeline] stream DONE pii={'YES' if pii_key else 'no'} chunks={len(sse_buffer)}")
+        print(f"[velum] stream DONE pii={'YES' if pii_key else 'no'} chunks={len(sse_buffer)}")
 
     return StreamingResponse(generate(), media_type="text/event-stream")
