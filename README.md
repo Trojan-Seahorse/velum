@@ -143,6 +143,7 @@ services:
       - PYTHONUNBUFFERED=1
       - UPSTREAM_URL=https://www.dmxapi.cn/v1
       - PII_ENABLED=true
+      - STRIP_THINKING=false
       - ARGUS_REDACT_PSEUDONYM_SALT=your-random-salt-here
     restart: unless-stopped
     mem_limit: 1g
@@ -345,18 +346,20 @@ Hermes Dashboard 地址：`http://your-nas-ip:17832`。在 Dashboard 中添加�
 | `UPSTREAM_URL` | ✅ | — | 上游 LLM API 地址，如 `https://www.dmxapi.cn/v1` |
 | `ARGUS_REDACT_PSEUDONYM_SALT` | ✅ | — | 化名模式的盐值，决定假名生成。用随机字符串，不同实例用不同值 |
 | `PII_ENABLED` | — | `true` | 设为 `false` 关闭脱敏引擎，所有消息直通上游 |
+| `STRIP_THINKING` | — | `false` | 设为 `true` 移除 thinking 参数（旧兼容模式）。默认 `false` 时，Velum 自动为 DeepSeek 模型注入思考模式 |
 | `PYTHONUNBUFFERED` | — | — | 设为 `1` 可让 Docker 日志实时输出（推荐） |
 
 ## 架构
 
 ```
-main.py (~620 行)
+main.py (~630 行)
 ├── /health                   健康检查
 ├── /v1/models                模型列表（转发上游）
 ├── /v1/chat/completions      OpenAI 兼容端点
 │   ├── get_last_user_content  提取最后一条用户消息
 │   ├── parse_mode_prefix      解析 !pii 模式前缀
 │   ├── redact_text            调用 argus-redact 脱敏
+│   ├── thinking_inject         为 DeepSeek 模型注入思考模式
 │   ├── [上游 LLM 调用]
 │   ├── restore_text           还原 LLM 响应中的 PII
 │   └── SSE 流式缓冲还原       DeepSeek 流式响应处理

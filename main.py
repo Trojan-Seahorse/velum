@@ -53,10 +53,12 @@ app = FastAPI(title="Velum")
 UPSTREAM = os.environ["UPSTREAM_URL"].rstrip("/")
 PII_ENABLED = os.environ.get("PII_ENABLED", "true").lower() == "true"
 STRIP_THINKING = os.environ.get("STRIP_THINKING", "").lower() == "true"
-# Scheme B: strip `thinking` param from requests before forwarding to upstream.
-# This prevents DMXAPI from entering thinking mode for Hermes's custom provider
-# path (which can't properly handle reasoning_content echo-back in multi-turn).
-# Velum still gets full PII pipeline coverage.
+# When STRIP_THINKING=true: strip `thinking` param from requests before
+# forwarding to upstream (legacy Scheme B for Hermes compat when it couldn't
+# handle reasoning_content echo-back in multi-turn).
+# Default (false): velum injects {"thinking": {"type": "enabled"}} for DeepSeek
+# models, enabling chain-of-thought reasoning. Combined with the Hermes PR #31582
+# empty-response fix, this eliminates the "Empty Response" error class.
 
 # ── Health ──────────────────────────────────────────────────────────────────
 
@@ -434,11 +436,18 @@ async def chat_completions(request: Request):
         f"model={model} mode={pii_mode} pii={'YES' if pii_key else 'no'}"
     )
 
-    # ── Strip thinking param (Scheme B: Hermes custom provider compat) ──
-    if STRIP_THINKING and "thinking" in body_json:
-        thinking_val = body_json.pop("thinking")
+    # ── Thinking injection (DeepSeek auto-enable) ──
+    # Default: inject {"thinking": {"type": "enabled"}} for DeepSeek models.
+    # Set STRIP_THINKING=true to strip instead (legacy compat mode).
+    if STRIP_THINKING:
+        if "thinking" in body_json:
+            thinking_val = body_json.pop("thinking")
+            body = json.dumps(body_json).encode("utf-8")
+            print(f"[pipeline] thinking stripped (was: {thinking_val})")
+    elif model.startswith("deepseek") and "thinking" not in body_json:
+        body_json["thinking"] = {"type": "enabled"}
         body = json.dumps(body_json).encode("utf-8")
-        print(f"[pipeline] thinking stripped (was: {thinking_val})")
+        print("[pipeline] thinking injected: enabled (deepseek default override)")
 
     # ── Build upstream headers ──
     headers = {
