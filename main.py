@@ -52,20 +52,13 @@ app = FastAPI(title="Velum")
 
 UPSTREAM = os.environ["UPSTREAM_URL"].rstrip("/")
 PII_ENABLED = os.environ.get("PII_ENABLED", "true").lower() == "true"
-STRIP_THINKING = os.environ.get("STRIP_THINKING", "").lower() == "true"
-# When STRIP_THINKING=true: strip `thinking` param from requests before
-# forwarding to upstream (legacy Scheme B for Hermes compat when it couldn't
-# handle reasoning_content echo-back in multi-turn).
-# Default (false): velum injects {"thinking": {"type": "enabled"}} for DeepSeek
-# models, enabling chain-of-thought reasoning. Combined with the Hermes PR #31582
-# empty-response fix, this eliminates the "Empty Response" error class.
 
 # ── Health ──────────────────────────────────────────────────────────────────
 
 
 @app.get("/health")
 async def health():
-    status: dict = {"status": "ok", "upstream": UPSTREAM, "pii": "disabled", "strip_thinking": STRIP_THINKING}
+    status: dict = {"status": "ok", "upstream": UPSTREAM, "pii": "disabled"}
     if PII_ENABLED:
         try:
             from argus_redact import redact
@@ -436,15 +429,8 @@ async def chat_completions(request: Request):
         f"model={model} mode={pii_mode} pii={'YES' if pii_key else 'no'}"
     )
 
-    # ── Thinking injection (DeepSeek auto-enable) ──
-    # Default: inject {"thinking": {"type": "enabled"}} for DeepSeek models.
-    # Set STRIP_THINKING=true to strip instead (legacy compat mode).
-    if STRIP_THINKING:
-        if "thinking" in body_json:
-            thinking_val = body_json.pop("thinking")
-            body = json.dumps(body_json).encode("utf-8")
-            print(f"[pipeline] thinking stripped (was: {thinking_val})")
-    elif model.startswith("deepseek") and "thinking" not in body_json:
+    # ── DeepSeek thinking injection ──
+    if model.startswith("deepseek") and "thinking" not in body_json:
         body_json["thinking"] = {"type": "enabled"}
         body = json.dumps(body_json).encode("utf-8")
         print("[pipeline] thinking injected: enabled (deepseek default override)")

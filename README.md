@@ -143,7 +143,6 @@ services:
       - PYTHONUNBUFFERED=1
       - UPSTREAM_URL=https://www.dmxapi.cn/v1
       - PII_ENABLED=true
-      - STRIP_THINKING=false
       - ARGUS_REDACT_PSEUDONYM_SALT=your-random-salt-here
     restart: unless-stopped
     mem_limit: 1g
@@ -346,7 +345,6 @@ Hermes Dashboard 地址：`http://your-nas-ip:17832`。在 Dashboard 中添加�
 | `UPSTREAM_URL` | ✅ | — | 上游 LLM API 地址，如 `https://www.dmxapi.cn/v1` |
 | `ARGUS_REDACT_PSEUDONYM_SALT` | ✅ | — | 化名模式的盐值，决定假名生成。用随机字符串，不同实例用不同值 |
 | `PII_ENABLED` | — | `true` | 设为 `false` 关闭脱敏引擎，所有消息直通上游 |
-| `STRIP_THINKING` | — | `false` | 设为 `true` 移除 thinking 参数（旧兼容模式）。默认 `false` 时，Velum 自动为 DeepSeek 模型注入思考模式 |
 | `PYTHONUNBUFFERED` | — | — | 设为 `1` 可让 Docker 日志实时输出（推荐） |
 
 ## 架构
