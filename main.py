@@ -461,8 +461,9 @@ async def chat_completions(request: Request):
                 f"model={model} mode={pii_mode} pii={'YES' if pii_key else 'no'}"
             )
 
-    # ── DeepSeek thinking injection ──
-    if model.startswith("deepseek") and "thinking" not in body_json:
+    # ── DeepSeek thinking injection (DISABLED 2026-06-08: causes empty content
+    #     with large contexts — reasoning consumes all max_tokens budget) ──
+    if False and model.startswith("deepseek") and "thinking" not in body_json:
         body_json["thinking"] = {"type": "enabled"}
         body = json.dumps(body_json).encode("utf-8")
         print("[velum] thinking injected: enabled (deepseek default override)")
